@@ -28,6 +28,9 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
+/* 因睡眠而被阻塞的线程 */
+static struct list sleeping_list;
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -71,6 +74,13 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+static bool less_sleeping_ticks(const struct list_elem *a,
+                                const struct list_elem *b,
+                                void *aux);
+static bool less_priority(const struct list_elem *a,
+                          const struct list_elem *b,
+                          void *aux);
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -92,6 +102,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&sleeping_list);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -133,6 +144,11 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
+
+  /* 检查被阻塞线程的睡眠时间是否已经结束 */
+  enum intr_level old_level = intr_disable ();
+  thread_sleeping_check();
+  intr_set_level (old_level);
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -469,6 +485,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+  t->sleeping_ticks = 0;
   list_push_back (&all_list, &t->allelem);
 }
 
@@ -545,6 +562,47 @@ thread_schedule_tail (struct thread *prev)
     }
 }
 
+void
+thread_sleeping_check(void)
+{
+  struct list_elem *e;
+
+  ASSERT (intr_get_level () == INTR_OFF);
+
+  if (list_empty(&sleeping_list))
+    return;
+
+  /* 更新阻塞队列中线程的睡眠时间 */
+  for (e = list_begin (&sleeping_list); e != list_end (&sleeping_list);
+       e = list_next (e))
+  {
+    struct thread *t = list_entry(e, struct thread, elem);
+    (t->sleeping_ticks)--;
+  }
+
+  /* 检查线程睡眠是否结束 */
+  while(!list_empty(&sleeping_list))
+  {
+    e = list_begin(&sleeping_list);
+    struct thread *t = list_entry(e, struct thread, elem);
+    if(t->sleeping_ticks<=0)
+    {
+      list_pop_front(&sleeping_list);
+      thread_unblock(t);
+    }
+    else
+      break;
+  }
+}
+
+void
+thread_sleep(void)
+{
+  struct thread *cur = thread_current();
+  list_insert_ordered(&sleeping_list, &cur->elem, less_sleeping_ticks, NULL);
+  thread_block();
+}
+
 /* Schedules a new process.  At entry, interrupts must be off and
    the running process's state must have been changed from
    running to some other state.  This function finds another
@@ -580,6 +638,21 @@ allocate_tid (void)
   lock_release (&tid_lock);
 
   return tid;
+}
+
+
+static bool
+less_sleeping_ticks(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  return list_entry(a, struct thread, elem)->sleeping_ticks <
+         list_entry(b, struct thread, elem)->sleeping_ticks;
+}
+
+static bool
+less_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  return list_entry(a, struct thread, elem)->priority >
+         list_entry(b, struct thread, elem)->priority;
 }
 
 /* Offset of `stack' member within `struct thread'.
