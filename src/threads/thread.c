@@ -74,12 +74,13 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+static void thread_priority_check(void);
 static bool less_sleeping_ticks(const struct list_elem *a,
                                 const struct list_elem *b,
-                                void *aux);
-static bool less_priority(const struct list_elem *a,
+                                void *aux UNUSED);
+static bool less_thread_priority(const struct list_elem *a,
                           const struct list_elem *b,
-                          void *aux);
+                          void *aux UNUSED);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -225,6 +226,10 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  /* 检查加入就绪队列的线程的优先级是否高于当前正在运行的线程
+     如果高于当前线程，则当前线程让出CPU */
+  thread_priority_check();
+
   return tid;
 }
 
@@ -261,7 +266,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_insert_ordered (&ready_list, &t->elem, less_priority, NULL);
+  list_insert_ordered (&ready_list, &t->elem, less_thread_priority, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -332,7 +337,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_insert_ordered (&ready_list, &cur->elem, less_priority, NULL);
+    list_insert_ordered (&ready_list, &cur->elem, less_thread_priority, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -360,6 +365,7 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  thread_priority_check();
 }
 
 /* Returns the current thread's priority. */
@@ -641,6 +647,15 @@ allocate_tid (void)
 }
 
 
+static void thread_priority_check(void)
+{
+  if(!list_empty(&ready_list))
+  {
+    if(less_thread_priority(list_begin(&ready_list), &thread_current()->elem, NULL))
+      thread_yield();
+  }
+}
+
 static bool
 less_sleeping_ticks(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
 {
@@ -649,7 +664,7 @@ less_sleeping_ticks(const struct list_elem *a, const struct list_elem *b, void *
 }
 
 static bool
-less_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+less_thread_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
 {
   return list_entry(a, struct thread, elem)->priority >
          list_entry(b, struct thread, elem)->priority;
