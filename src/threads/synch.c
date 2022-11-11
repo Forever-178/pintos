@@ -32,6 +32,10 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+static bool less_priority_for_semaphore_elem(const struct list_elem *,
+                                             const struct list_elem *,
+                                             void * UNUSED);
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -118,7 +122,8 @@ sema_up (struct semaphore *sema)
   old_level = intr_disable ();
   
   /* 不能把thread_priority_check放到这条if语句中
-     原因是 不能重复关中断
+     会产生不符合预期的效果
+     可能的原因是 不能重复关中断
      thread_priority_check会调用thread_yield
      并且thread_yield会关中断
      这条if语句处于关中断的状态下，所以会出现重复关中断 */
@@ -262,6 +267,11 @@ struct semaphore_elem
   {
     struct list_elem elem;              /* List element. */
     struct semaphore semaphore;         /* This semaphore. */
+
+    /*TODO: 这里是用来控制条件变量按优先级唤醒线程的，但从语义上
+            来说, 优先级是线程的属性，而不是semaphore_elem的属性
+            放到这里可能不太合适, 试着寻找一下更好的解决方案 */
+    int priority; 
   };
 
 /* Initializes condition variable COND.  A condition variable
@@ -306,7 +316,13 @@ cond_wait (struct condition *cond, struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
   
   sema_init (&waiter.semaphore, 0);
-  list_push_back (&cond->waiters, &waiter.elem);
+  waiter.priority = thread_current()->priority;
+  /* 由于此时当前线程还未进入waiter.semaphore的等待队列中，所以不能
+     直接根据每个信号量的等待队列中的第一个元素(线程)的优先级来作为这
+     里的序关系*/
+  list_insert_ordered(&cond->waiters, &waiter.elem,
+                      less_priority_for_semaphore_elem,
+                      NULL);
   lock_release (lock);
   sema_down (&waiter.semaphore);
   lock_acquire (lock);
@@ -346,4 +362,13 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 
   while (!list_empty (&cond->waiters))
     cond_signal (cond, lock);
+}
+
+static bool
+less_priority_for_semaphore_elem(const struct list_elem *a,
+                                 const struct list_elem *b,
+                                 void *aux UNUSED)
+{
+  return list_entry(a, struct semaphore_elem, elem)->priority >
+         list_entry(b, struct semaphore_elem, elem)->priority;
 }
