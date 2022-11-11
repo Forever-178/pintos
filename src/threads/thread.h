@@ -143,4 +143,9 @@ int thread_get_load_avg (void);
 void thread_sleeping_check(void);
 void thread_sleep(void);
 
+bool thread_less_priority(const struct list_elem *a,
+                          const struct list_elem *b,
+                          void *aux UNUSED);
+
+void thread_priority_check(void);
 #endif /* threads/thread.h */
