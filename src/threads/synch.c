@@ -32,9 +32,9 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-static bool less_priority_for_semaphore_elem(const struct list_elem *,
-                                             const struct list_elem *,
-                                             void * UNUSED);
+static bool less_priority_value(const struct list_elem *,
+                                const struct list_elem *,
+                                void *UNUSED);
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -267,11 +267,6 @@ struct semaphore_elem
   {
     struct list_elem elem;              /* List element. */
     struct semaphore semaphore;         /* This semaphore. */
-
-    /*TODO: 这里是用来控制条件变量按优先级唤醒线程的，但从语义上
-            来说, 优先级是线程的属性，而不是semaphore_elem的属性
-            放到这里可能不太合适, 试着寻找一下更好的解决方案 */
-    int priority; 
   };
 
 /* Initializes condition variable COND.  A condition variable
@@ -316,13 +311,7 @@ cond_wait (struct condition *cond, struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
   
   sema_init (&waiter.semaphore, 0);
-  waiter.priority = thread_current()->priority;
-  /* 由于此时当前线程还未进入waiter.semaphore的等待队列中，所以不能
-     直接根据每个信号量的等待队列中的第一个元素(线程)的优先级来作为这
-     里的序关系*/
-  list_insert_ordered(&cond->waiters, &waiter.elem,
-                      less_priority_for_semaphore_elem,
-                      NULL);
+  list_push_back(&cond->waiters, &waiter.elem);
   lock_release (lock);
   sema_down (&waiter.semaphore);
   lock_acquire (lock);
@@ -343,9 +332,16 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (!intr_context ());
   ASSERT (lock_held_by_current_thread (lock));
 
-  if (!list_empty (&cond->waiters)) 
-    sema_up (&list_entry (list_pop_front (&cond->waiters),
-                          struct semaphore_elem, elem)->semaphore);
+  /* 将优先队列的实现从有序链表改为了无序链表，避免了插入时无法访问
+     待阻塞线程优先级的问题*/
+  if (!list_empty (&cond->waiters))
+  {
+    struct list_elem *e = list_max(&cond->waiters,
+                            less_priority_value, NULL);
+    list_remove(e);
+    sema_up(&list_entry(e, struct semaphore_elem, elem)
+                 ->semaphore);
+  }
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
@@ -364,11 +360,19 @@ cond_broadcast (struct condition *cond, struct lock *lock)
     cond_signal (cond, lock);
 }
 
-static bool
-less_priority_for_semaphore_elem(const struct list_elem *a,
-                                 const struct list_elem *b,
-                                 void *aux UNUSED)
+static bool less_priority_value(const struct list_elem *a,
+                          const struct list_elem *b,
+                          void *aux UNUSED)
 {
-  return list_entry(a, struct semaphore_elem, elem)->priority >
-         list_entry(b, struct semaphore_elem, elem)->priority;
+  struct semaphore *sa = &list_entry(a,
+                                     struct semaphore_elem, elem)
+                              ->semaphore;
+  struct semaphore *sb = &list_entry(b,
+                                     struct semaphore_elem, elem)
+                              ->semaphore;
+  struct thread *ta = list_entry(list_front(&sa->waiters),
+                                 struct thread, elem);
+  struct thread *tb = list_entry(list_front(&sb->waiters),
+                                 struct thread, elem);
+  return ta->priority < tb->priority;
 }
