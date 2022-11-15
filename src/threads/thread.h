@@ -88,12 +88,15 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int init_priority;                  /* 未被转让时的优先级 */
     int64_t sleeping_ticks;             /* 还需要睡眠的ticks */
 
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+
+    struct list lock_list;              /* 该线程持有的所有锁 */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -148,4 +151,5 @@ bool thread_less_priority(const struct list_elem *a,
                           void *aux UNUSED);
 
 void thread_priority_check(void);
+
 #endif /* threads/thread.h */
