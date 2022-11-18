@@ -35,9 +35,8 @@
 static bool less_priority_value(const struct list_elem *,
                                 const struct list_elem *,
                                 void *UNUSED);
-static int get_max_priority_for_lock(struct lock *lock);
-static void thread_priority_update_on_release(void);
-static void thread_priority_update_on_require(struct lock *lock);
+static void thread_priority_update(struct thread *t, int priority);
+static void lock_priority_update(struct lock *lock, int priority);
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -71,15 +70,17 @@ sema_down (struct semaphore *sema)
 
   ASSERT (sema != NULL);
   ASSERT (!intr_context ());
-
+  
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      // list_push_back (&sema->waiters, &thread_current ()->elem);
+      struct thread *cur = thread_current();
+      cur->sema_waiting = sema;
       list_insert_ordered(&sema->waiters,
-                          &thread_current()->elem,
+                          &cur->elem,
                           thread_less_priority, NULL);
       thread_block();
+      cur->sema_waiting = NULL;
     }
   sema->value--;
   intr_set_level (old_level);
@@ -124,12 +125,6 @@ sema_up (struct semaphore *sema)
 
   old_level = intr_disable ();
   
-  /* 不能把thread_priority_check放到这条if语句中
-     会产生不符合预期的效果
-     可能的原因是 不能重复关中断
-     thread_priority_check会调用thread_yield
-     并且thread_yield会关中断
-     这条if语句处于关中断的状态下，所以会出现重复关中断 */
   if (!list_empty (&sema->waiters)) 
     thread_unblock (list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem));
@@ -219,23 +214,21 @@ lock_acquire (struct lock *lock)
   if(!lock_try_acquire(lock))
   {
     /* 因acquire该锁而被阻塞，更新lock的max_priority，并捐赠优先级给
-       持有锁的线程 */
-    int max_priority = thread_current()->priority;
-    int p = get_max_priority_for_lock(lock);
-    if(max_priority<p)
-      max_priority = p;
-    lock->max_priority = max_priority;
-    thread_priority_update_on_require(lock);
+       持有锁的线程，然后继续更新持有该锁的线程锁需求的锁的优先级，不断
+       重复这个过程 */
+    struct thread *cur = thread_current();
+    
+    lock_priority_update(lock, cur->priority);
+    cur->lock_aquiring = lock;
 
     /* 阻塞当前线程 */
     sema_down(&lock->semaphore);
 
     /* 线程已经acquire该锁，更新lock的priority，以及线程的相关信息 */
-    lock->max_priority = get_max_priority_for_lock(lock);
-    struct thread *cur = thread_current();
+    cur->lock_aquiring = NULL;
     lock->holder = cur;
     list_push_back(&cur->lock_list, &lock->elem);
-    thread_priority_update_on_release();
+    lock_priority_update(lock, 0);
     thread_priority_check();
   }
 }
@@ -279,7 +272,9 @@ lock_release (struct lock *lock)
   lock->holder = NULL;
   sema_up (&lock->semaphore);
   /* release了该锁，需要重新计算该线程被捐赠的优先级 */
-  thread_priority_update_on_release();
+  // thread_priority_update_on_release();
+  struct thread *cur = thread_current();
+  thread_priority_update(cur, cur->init_priority);
   thread_priority_check();
 }
 
@@ -409,51 +404,55 @@ static bool less_priority_value(const struct list_elem *a,
   return ta->priority < tb->priority;
 }
 
-static int 
-get_max_priority_for_lock(struct lock *lock)
+/* 更新线程被捐赠的优先级，从它锁持有的所有锁的优先级与参数priority中选取最大值 */
+static void
+thread_priority_update(struct thread *t, int priority)
 {
-  int max_priority = 0;
+  /* 递归终止条件 */
+  if(t == NULL)
+    return;
+  /* 先更新当前线程的优先级*/
+  struct list_elem *e;
+  for (e = list_begin(&t->lock_list);
+       e != list_end(&t->lock_list);
+       e = list_next(e))
+  {
+    struct lock *lock = list_entry(e, struct lock, elem);
+    if(priority < lock->max_priority)
+      priority = lock->max_priority;
+  }
+  t->priority = priority;
+
+  /* 更新信号量等待队列中该线程的位置 */
+  if(t->sema_waiting != NULL)
+  {
+    list_remove(&t->elem);
+    list_insert_ordered(&t->sema_waiting->waiters, &t->elem,
+                        thread_less_priority, NULL);
+  }
+
+  /* 更新该线程锁需求的锁的优先级 */
+  lock_priority_update(t->lock_aquiring, 0);
+}
+
+static void 
+lock_priority_update(struct lock *lock, int priority)
+{
+  /* 递归终止条件 */
+  if(lock == NULL)
+    return;
+  /* 先更新该锁的优先级 */
   struct list_elem *e;
   for (e = list_begin(&lock->semaphore.waiters);
        e != list_end(&lock->semaphore.waiters);
        e = list_next(e))
   {
     int p = list_entry(e, struct thread, elem)->priority;
-    if (max_priority < p)
-      max_priority = p;
+    if (priority < p)
+      priority = p;
   };
-  return max_priority;
-}
-/* 拥有或释放锁之后，需要更新优先级 */
-static void 
-thread_priority_update_on_release(void)
-{
-  struct thread *cur = thread_current();
-  int priority = cur->init_priority;
-  struct list_elem *e;
-  for (e = list_begin(&cur->lock_list);
-       e != list_end(&cur->lock_list);
-       e = list_next(e))
-  {
-    struct lock *lock = list_entry(e, struct lock, elem);
-    if(priority < lock->max_priority)
-      priority = lock->max_priority;
-  }
-  cur->priority = priority;
-}
-static void
-thread_priority_update_on_require(struct lock *lock)
-{
-  struct thread *cur = thread_current();
-  int priority = cur->init_priority;
-  struct list_elem *e;
-  for (e = list_begin(&cur->lock_list);
-       e != list_end(&cur->lock_list);
-       e = list_next(e))
-  {
-    struct lock *lock = list_entry(e, struct lock, elem);
-    if(priority < lock->max_priority)
-      priority = lock->max_priority;
-  }
-  lock->holder->priority = priority;
+  lock->max_priority = priority;
+
+  /* 更新锁持有者的优先级 */
+  thread_priority_update(lock->holder, lock->holder->init_priority);
 }

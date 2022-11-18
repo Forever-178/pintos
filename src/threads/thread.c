@@ -493,6 +493,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->init_priority = priority;
   t->magic = THREAD_MAGIC;
   t->sleeping_ticks = 0;
+  t->lock_aquiring = NULL;
+  t->sema_waiting = NULL;
   list_init (&t->lock_list);
   list_push_back (&all_list, &t->allelem);
 }

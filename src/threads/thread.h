@@ -97,6 +97,8 @@ struct thread
     struct list_elem elem;              /* List element. */
 
     struct list lock_list;              /* 该线程持有的所有锁 */
+    struct lock *lock_aquiring;          /* 该线程尝试获取，但正在被其他线程持有的锁 */
+    struct semaphore *sema_waiting;     /* 该线程正在等待的信号量 */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
