@@ -332,8 +332,9 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_insert_ordered (&ready_list, &cur->elem, thread_less_priority, NULL);
+  if (cur != idle_thread)
+    list_insert_ordered(&ready_list, &cur->elem,
+                        thread_less_priority, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -360,7 +361,10 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  struct thread *cur = thread_current();
+  if(cur->init_priority==cur->priority)
+    cur->priority = new_priority;
+  cur->init_priority = new_priority;
   thread_priority_check();
 }
 
@@ -486,8 +490,12 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->init_priority = priority;
   t->magic = THREAD_MAGIC;
   t->sleeping_ticks = 0;
+  t->lock_aquiring = NULL;
+  t->sema_waiting = NULL;
+  list_init (&t->lock_list);
   list_push_back (&all_list, &t->allelem);
 }
 
@@ -642,7 +650,7 @@ allocate_tid (void)
   return tid;
 }
 
-
+/* 检查就绪队列中是否有比当前线程优先级更高的线程 */
 void
 thread_priority_check(void)
 {
@@ -652,6 +660,8 @@ thread_priority_check(void)
       thread_yield();
   }
 }
+
+
 
 static bool
 less_sleeping_ticks(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
