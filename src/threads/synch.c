@@ -70,7 +70,7 @@ sema_down (struct semaphore *sema)
 
   ASSERT (sema != NULL);
   ASSERT (!intr_context ());
-  
+
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
@@ -170,7 +170,7 @@ sema_test_helper (void *sema_)
       sema_up (&sema[1]);
     }
 }
-
+
 /* Initializes LOCK.  A lock can be held by at most a single
    thread at any given time.  Our locks are not "recursive", that
    is, it is an error for the thread currently holding a lock to
@@ -361,7 +361,7 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
 
   /* 将优先队列的实现从有序链表改为了无序链表，避免了插入时无法访问
      待阻塞线程优先级的问题*/
-  if (!list_empty (&cond->waiters))
+  if (!list_empty (&cond->waiters)) 
   {
     struct list_elem *e = list_max(&cond->waiters,
                             less_priority_value, NULL);
